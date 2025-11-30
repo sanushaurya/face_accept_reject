@@ -1,0 +1,7 @@
+streamlit
+numpy==1.26.4
+torch
+torchvision
+facenet-pytorch
+pillow
+joblib
