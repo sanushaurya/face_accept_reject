@@ -6,3 +6,4 @@ facenet-pytorch
 pillow
 joblib
 scikit-learn
+opencv-python-headless
