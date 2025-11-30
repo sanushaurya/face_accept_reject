@@ -5,3 +5,4 @@ torchvision
 facenet-pytorch
 pillow
 joblib
+scikit-learn
