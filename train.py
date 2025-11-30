@@ -3,7 +3,7 @@ import os
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
-import joblib
+import pickle
 import torch
 
 from sklearn.svm import SVC
@@ -13,35 +13,53 @@ from sklearn.model_selection import cross_val_score, StratifiedKFold
 from facenet_pytorch import MTCNN, InceptionResnetV1
 from torchvision import transforms
 
+# ================================
 # CONFIG
+# ================================
 DATA_DIR = "data"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-AUGMENT_TIMES = 20  # number of augmentations per image
-CONFIDENCE_THRESHOLD = 0.60  # used later in app.py
-
+AUGMENT_TIMES = 20  # Increase for better accuracy
 print("Using device:", DEVICE)
 
-# FACE DETECTOR AND EMBEDDING MODEL
+# ================================
+# LOAD MODELS
+# ================================
 mtcnn = MTCNN(image_size=160, margin=14, device=DEVICE)
 resnet = InceptionResnetV1(pretrained="vggface2").eval().to(DEVICE)
 
-# AUGMENTATIONS TO BOOST ACCURACY
+# ================================
+# AUGMENTATION PIPELINE
+# ================================
 augment = transforms.Compose([
     transforms.RandomHorizontalFlip(),
     transforms.RandomRotation(10),
     transforms.ColorJitter(brightness=0.2, contrast=0.2),
 ])
 
-def get_embedding(img: Image.Image):
-    """Extract FaceNet embedding from an image."""
-    face = mtcnn(img)
+# ================================
+# EMBEDDING FUNCTION
+# ================================
+def get_embedding(img):
+    img_np = np.array(img)
+
+    try:
+        face = mtcnn(img_np)
+    except Exception as e:
+        print("MTCNN Error:", e)
+        return None
+
     if face is None:
         return None
+
     with torch.no_grad():
         emb = resnet(face.unsqueeze(0).to(DEVICE))
+
     return emb.cpu().numpy()[0]
 
-# ========= TRAINING START =========
+
+# ================================
+# TRAINING LOOP
+# ================================
 X, y = [], []
 
 print("\n=== Extracting & Augmenting Images ===\n")
@@ -53,18 +71,19 @@ for person in os.listdir(DATA_DIR):
 
     for img_name in tqdm(os.listdir(person_folder), desc=f"Processing {person}"):
         img_path = os.path.join(person_folder, img_name)
+
         try:
             img = Image.open(img_path).convert("RGB")
         except:
             continue
 
-        # EMBEDDING FROM ORIGINAL IMAGE
+        # Original embedding
         emb = get_embedding(img)
         if emb is not None:
             X.append(emb)
             y.append(person)
 
-        # AUGMENTED IMAGES
+        # Augmented embeddings
         for _ in range(AUGMENT_TIMES):
             aug_img = augment(img)
             emb_aug = get_embedding(aug_img)
@@ -72,23 +91,27 @@ for person in os.listdir(DATA_DIR):
                 X.append(emb_aug)
                 y.append(person)
 
-# Convert to numpy arrays
 X = np.array(X)
 y = np.array(y)
-
 print("\nTotal embeddings:", len(X))
 
-# ========= LABEL ENCODING =========
+# ================================
+# LABEL ENCODER
+# ================================
 le = LabelEncoder()
 y_encoded = le.fit_transform(y)
 
-# ========= SVM CLASSIFIER TRAINING =========
+# ================================
+# TRAIN SVM CLASSIFIER
+# ================================
 clf = SVC(kernel="rbf", probability=True)
 
 print("\n=== Training SVM Classifier ===")
 clf.fit(X, y_encoded)
 
-# ========= CROSS VALIDATION FOR ACCURACY =========
+# ================================
+# CROSS-VALIDATION ACCURACY
+# ================================
 print("\n=== Evaluating Accuracy (Cross-Validation) ===")
 cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
 scores = cross_val_score(clf, X, y_encoded, cv=cv)
@@ -96,10 +119,16 @@ scores = cross_val_score(clf, X, y_encoded, cv=cv)
 print(f"\nCross-validation accuracy: {scores.mean():.4f}")
 print(f"Std deviation: {scores.std():.4f}")
 
-# ========= SAVE MODEL =========
+# ================================
+# SAVE MODELS (CLOUD-SAFE PICKLE)
+# ================================
 os.makedirs("models", exist_ok=True)
-joblib.dump(clf, "models/svm_model.joblib")
-joblib.dump(le, "models/label_encoder.joblib")
+
+with open("models/svm_model.joblib", "wb") as f:
+    pickle.dump(clf, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+with open("models/label_encoder.joblib", "wb") as f:
+    pickle.dump(le, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 print("\n=== TRAINING COMPLETE ===")
 print("Saved: models/svm_model.joblib")
